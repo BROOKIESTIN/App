@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>私人持仓推演看板</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f6f8; margin: 0; padding: 15px; color: #333; }
+        .card { background: #fff; border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        h2 { margin-top: 0; font-size: 18px; border-bottom: 1px solid #eee; padding-bottom: 10px; color: #2c3e50; }
+        .input-group { margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
+        .input-group label { font-size: 14px; color: #555; }
+        .input-group input { width: 120px; padding: 6px; border: 1px solid #ccc; border-radius: 6px; text-align: right; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .stat-box { background: #f8f9fa; padding: 10px; border-radius: 8px; text-align: center; }
+        .stat-box .label { font-size: 12px; color: #666; }
+        .stat-box .value { font-size: 18px; font-weight: bold; margin-top: 5px; }
+        .text-red { color: #e74c3c; } /* A股红涨 */
+        .text-green { color: #2ecc71; } /* A股绿跌 */
+        table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; text-align: right; }
+        th, td { border: 1px solid #eee; padding: 8px 4px; }
+        th { background: #f8f9fa; color: #666; text-align: center; }
+        td:first-child { text-align: center; }
+        button { width: 100%; background: #3498db; color: white; border: none; padding: 10px; border-radius: 8px; font-size: 16px; margin-top: 10px; cursor: pointer; }
+        button:active { background: #2980b9; }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h2>⚙️ 参数设置</h2>
+        <div class="input-group">
+            <label>股票代码 (如 sh600481)</label>
+            <input type="text" id="stockCode" value="sh600481">
+        </div>
+        <div class="input-group">
+            <label>初始成本 (元)</label>
+            <input type="number" id="cost" value="385000">
+        </div>
+        <div class="input-group">
+            <label>持仓股数</label>
+            <input type="number" id="shares" value="26200">
+        </div>
+        <div class="input-group">
+            <label>每日预期涨幅 (%)</label>
+            <input type="number" id="dailyGrowth" value="10" step="0.1">
+        </div>
+        <button onclick="refreshData()">手动刷新真实数据</button>
+    </div>
+
+    <div class="card">
+        <h2>📊 投资汇总分析 (实时)</h2>
+        <div class="grid-2">
+            <div class="stat-box">
+                <div class="label">当前股价</div>
+                <div class="value" id="currentPrice">--</div>
+            </div>
+            <div class="stat-box">
+                <div class="label">回本股价</div>
+                <div class="value" id="breakevenPrice">--</div>
+            </div>
+            <div class="stat-box">
+                <div class="label">当前市值</div>
+                <div class="value" id="marketValue">--</div>
+            </div>
+            <div class="stat-box">
+                <div class="label">当前盈亏</div>
+                <div class="value" id="profit">--</div>
+            </div>
+        </div>
+        <div style="text-align: center; margin-top: 10px; font-size: 14px;">
+            盈亏率: <span id="profitRate" style="font-weight: bold;">--</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>📈 未来10个交易日推演</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>天数</th>
+                    <th>推演股价</th>
+                    <th>收盘市值</th>
+                    <th>日盈利额</th>
+                </tr>
+            </thead>
+            <tbody id="projectionTable">
+                </tbody>
+        </table>
+    </div>
+
+    <script>
+        // 利用动态创建 Script 标签的方式，绕过浏览器跨域限制(CORS)，拉取腾讯财经数据
+        function fetchStockData(code) {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = `https://qt.gtimg.cn/q=${code}`;
+                script.onload = () => {
+                    const dataStr = window[`v_${code}`];
+                    if (dataStr) {
+                        const parts = dataStr.split('~');
+                        // 腾讯接口：[3]是当前价
+                        resolve(parseFloat(parts[3])); 
+                    } else {
+                        reject('未获取到数据');
+                    }
+                    document.head.removeChild(script);
+                };
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
+
+        // 格式化数字，保留两位小数并加上千位分隔符
+        function formatNumber(num) {
+            return Number(num).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        async function refreshData() {
+            // 1. 获取输入参数
+            const code = document.getElementById('stockCode').value.trim();
+            const cost = parseFloat(document.getElementById('cost').value);
+            const shares = parseFloat(document.getElementById('shares').value);
+            const growthRate = parseFloat(document.getElementById('dailyGrowth').value) / 100;
+
+            try {
+                // 2. 拉取真实股价
+                const realPrice = await fetchStockData(code);
+                
+                // 3. 计算汇总数据
+                const marketValue = realPrice * shares;
+                const profit = marketValue - cost;
+                const profitRate = (profit / cost) * 100;
+                const breakevenPrice = cost / shares;
+
+                // 4. 更新看板 UI
+                document.getElementById('currentPrice').innerText = realPrice.toFixed(2);
+                document.getElementById('breakevenPrice').innerText = breakevenPrice.toFixed(2);
+                document.getElementById('marketValue').innerText = formatNumber(marketValue);
+                
+                const profitEl = document.getElementById('profit');
+                profitEl.innerText = formatNumber(profit);
+                profitEl.className = 'value ' + (profit >= 0 ? 'text-red' : 'text-green'); // A股红涨绿跌
+                
+                const rateEl = document.getElementById('profitRate');
+                rateEl.innerText = profitRate.toFixed(2) + '%';
+                rateEl.className = profit >= 0 ? 'text-red' : 'text-green';
+
+                // 5. 生成 10 天推演表
+                const tbody = document.getElementById('projectionTable');
+                tbody.innerHTML = ''; // 清空旧数据
+                
+                let currentProjPrice = realPrice;
+                for (let i = 1; i <= 10; i++) {
+                    let prevValue = currentProjPrice * shares;
+                    if (i > 1) { // 第1天保持当前真实价格，从第2天开始复利增长
+                        currentProjPrice = currentProjPrice * (1 + growthRate);
+                    }
+                    
+                    let currentValue = currentProjPrice * shares;
+                    let dailyProfit = i === 1 ? profit : (currentValue - prevValue); // 第1天显示总盈亏，之后显示单日盈亏
+
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${i === 1 ? '当前' : '第'+i+'天'}</td>
+                        <td>${currentProjPrice.toFixed(3)}</td>
+                        <td>${formatNumber(currentValue)}</td>
+                        <td class="${dailyProfit >= 0 ? 'text-red' : 'text-green'}">${formatNumber(dailyProfit)}</td>
+                    `;
+                    tbody.appendChild(tr);
+                }
+
+            } catch (error) {
+                alert("获取股票数据失败，请检查股票代码是否正确（需带前缀，如 sh600481 或 sz000001）");
+                console.error(error);
+            }
+        }
+
+        // 页面加载时自动运行一次
+        window.onload = refreshData;
+        
+        // 也可以设置每 10 秒自动刷新一次真实数据
+        // setInterval(refreshData, 10000); 
+    </script>
+</body>
+</html>
